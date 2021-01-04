@@ -33,7 +33,7 @@ def policy_evaluation(self, P, R, policy, gamma = 0.9, tol=1e-2):
         # ====================================================
         return value_function
     
-    def policy_iteration(P, R, gamma=0.9, tol=1e-3):
+def policy_iteration(P, R, gamma=0.9, tol=1e-3):
         """
         Args:
             P: np.array
@@ -50,24 +50,25 @@ def policy_evaluation(self, P, R, policy, gamma = 0.9, tol=1e-2):
             V: np.array
                 the value function associated to the final policy
         """
-        Ns, Na = R.shape
-        V = np.zeros(Ns)
-        policy = np.zeros(Ns, dtype=np.int)
-        # ====================================================
-        V_old = V
+    Ns, Na = R.shape
+    V = np.zeros(Ns)
+    policy = np.zeros(Ns, dtype=np.int)
+    # ====================================================
+    
+    V_old = V
+    V = policy_evaluation(P,R,policy,gamma,tol)
+
+    converged = False
+    while (not converged):
+
+        V = R + gamma * P.dot(V)
+        greedy_policy = np.argmax(V, axis = 1)
+        if np.all(greedy_policy == policy):
+            converged = True
+        policy = greedy_policy
         V = policy_evaluation(P,R,policy,gamma,tol)
-
-        converged = False
-        while (not converged):
-
-            V = R + gamma * P.dot(V)
-            greedy_policy = np.argmax(V, axis = 1)
-            if np.all(greedy_policy == policy):
-                converged = True
-            policy = greedy_policy
-            V = policy_evaluation(P,R,policy,gamma,tol)
-        # ====================================================
-        return policy, V
+    # ====================================================
+    return policy, V
 
 class Optaflow():
     
@@ -76,13 +77,15 @@ class Optaflow():
         self.saved_reward = []
         self.B = None
         self.env = env
-        self.accum_saved_reward
+        self.accum_saved_reward = []
         self.theta = theta
         self.A = None
         self.epsilon = epsilon
         self.eps0 = epsilon_0
         self.T = T
         self.alpha = alpha
+        self.MIS = []
+        self.traject_MIS = []
         
     
     def V_b(self):
@@ -113,7 +116,7 @@ class Optaflow():
         
         for t in range(B,T): #????
             s = self.env.getstate()
-            ts = T*iter(s)
+            ts = Titer[s]
             played_baseline = True
             if ts == 0:
                 policy_played = pi_0
@@ -134,8 +137,10 @@ class Optaflow():
                     safe_saved_reward[ts,s] = safe_saved_reward[ts-1,s] + self.alpha * self.V_b(s)
                     
             for s in self.env.state:
-                saved_reward[t] = safe_saved_reward[Titer(s),s]
-                J # = sampled policy of length H starting from s given by policy_played
+                saved_reward[t] = safe_saved_reward[Titer[s],s]
+                J # =
+                a = np.random() 
+                self.state = self.env.step(a) #sampled policy of length H starting from s given by policy_played
                 if not played_baseline:
                     self.MIS[ts,s] = policy_played
                     self.traject_MIS[ts,s] = J
@@ -151,13 +156,14 @@ class Optaflow():
             denom = 0
             z_k = self.traject_MIS[k,s]
             for j in range(ts):
-                denom += self.evaluatePolicy(MIS[j,s], z_k)
+                denom += self.evaluatePolicy(self.MIS[j,s], z_k)
             mu += np.min(Ts, self.evaluatePolicy(pi_0, z_k)/denom) * self.reward(z_k)
             
         return mu
     
     def getUppBound(self, s, ts):
-        return np.pow(self.W,H) * np.pow((ts / (2*np.log(ts) + 2*np.log(np.pi) + s*np.log(self.A) + np.log(1/(3*self.theta)))),(1/(1 + self.epsilon)))
+        #return np.pow(self.W,H) * np.pow((ts / (2*np.log(ts) + 2*np.log(np.pi) + s*np.log(self.A) + np.log(1/(3*self.theta)))),(1/(1 + self.epsilon)))
+        return np.inf
     
     def evaluatePolicy(self, pi_0, z_k):
         matches = 0
@@ -165,12 +171,13 @@ class Optaflow():
             s, a = z_k
             if a == self.V_0(s):
                 matches += 1
-            return np.pow(W,matches) * np.pow(self.eps0,H)
+        return np.pow(W,matches) * np.pow(self.eps0,H) #passer au log ?
         
     def optimStep(self, s, ts):
         for k in range(ts):
             graph_k, init_vertex, sink_vertex = Graph.getGraph(z_k)
-            policy_k = maximum_flow(graph_k, init_vertex, sink_vertex)
-            k_0 = np.argmax(self.V_robust_value(s, ts, policy_k))
+            value_flow, res_graph = maximum_flow(graph_k, init_vertex, sink_vertex) #O(V.E^2)
             
-            return policy_k0
+        k_0 = np.argmax(self.V_robust_value(s, ts, res_graph))
+            
+        return k_0
