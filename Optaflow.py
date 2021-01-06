@@ -242,7 +242,23 @@ class Optaflow():
         return k_0
 
     
-    
+    def getGraph(self,z_k):
+        idx = {}
+        for i in z_k:
+            (s,a) = i
+            try:
+                idx[(s,a)] +=1
+            except:
+                idx[(s,a)] = 1
+        idx = {k: v for k, v in sorted(idx.items())}
+        keys = np.array(list(idx.keys()))
+        no_double = list(dict.fromkeys(keys[:,0]))
+        row = keys[:,0]#np.array([0, 1, 3, 4])
+        column = keys[:,1]
+        data = np.array(list(idx.values()))
+        n = max(column.max()+1, row.max()+1)
+        csr_graph = csr_matrix((data, (row, column)), shape=(n,n))
+        return csr_graph.toarray()
             
             
 
