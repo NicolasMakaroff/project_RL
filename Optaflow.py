@@ -111,7 +111,7 @@ class Optaflow():
         self.Vpi_0   = Vpi_0  
         self.pi_b    = pi_b   # deterministic policy
         self.Vpi_b   = Vpi_b  
-        self.Veps    = Vpi_opt_eps0
+        self.Veps    = Vpi_opt_eps0       # only for regret computation purposes, we don't have acces to this
         self.Rb      = np.min(self.Vpi_b) # min value of V^pi_b, our assumption is that this value is positive
 
         self.MIS         = np.ndarray((self.T, self.S), dtype = object) # I think this should work to save
@@ -143,22 +143,22 @@ class Optaflow():
         self.accum_saved_reward = 0
         self.B = (1 - self.alpha)/ self.alpha * (self.S/self.Rb) * np.max(self.Vpi_b)
         
-        for t in range(B):
+        for t in range(self.B):
             s = self.env.get_state()
             vb = self.V_b(s)
             self.accum_saved_reward += self.alpha*vb # error in the pseudocode, it is self.alpha*vb instead of vb
             if t == 0:
                 # self.regret[t].append(self.V_eps(s) - vb)
-                self.regret[t] = self.V_eps(s) - vb
+                self.regret[t]   = self.V_eps(s) - vb
             else:
                 # self.regret[t].append(self.regret[t-1] + self.V_eps(s) - vb)
-                self.regret[t]  = self.regret[t-1] + self.V_eps(s) - vb
+                self.regret[t]   = self.regret[t-1] + self.V_eps(s) - vb
            
             self.saved_reward[t] = (t+1) * self.alpha * vb
             
     def block2(self):
         
-        for t in range(B,T):
+        for t in range(self.B, self.T):
             s  = self.env.getstate()
             ts = self.Titer[s]
             played_baseline = True
@@ -173,16 +173,16 @@ class Optaflow():
                 expPerformance = self.safe_saved_reward[ts-1,s] + vs_theta # what you think will win with this policy
                 minPerformance = (1 - self.alpha) * self.V_b(s)            # what you need to outperform
                 if expPerformance >= minPerformance:
-                    policy_played   = self.pi_optimist
+                    policy_played   = pi_optimist
                     played_baseline = False
                     self.safe_saved_reward[ts,s] = self.safe_saved_reward[ts-1,s] + expPerformance - minPerformance
                 else:
-                    policy_played = self.pi_b
+                    policy_played   = self.pi_b
                     played_baseline = True
                     self.safe_saved_reward[ts,s] = self.safe_saved_reward[ts-1,s] + self.alpha * self.V_b(s)
                     
             for s0 in self.env.state:
-                saved_reward[t] += safe_saved_reward[Titer[s0],s0]
+                self.saved_reward[t] += self.safe_saved_reward[self.Titer[s0],s0]
 
             #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
             # sampling trajectory in the environment of lenght self.H (env.H) starting in s
@@ -195,7 +195,7 @@ class Optaflow():
                  self.traject_MIS[ts,s] = J
                  self.Titer[s] = ts + 1
                     
-            Vfunc_played   = policy_evaluation(env.P, env.R, policy_played, gamma = env.gamma, tol = 1e-6, eps_greedy = True, epsilon = self.epsilon0)
+            Vfunc_played   = policy_evaluation(env.P, env.R, policy_played, gamma = env.gamma, tol = 1e-6, eps_greedy = True, epsilon = self.eps0)
             # self.regret[t] = self.regret[t-1] + self.V_eps(s) - self.V(s, policy_played)
             self.regret[t] = self.regret[t-1] + self.V_eps(s) - Vfunc_played[s] # I think this is equivalent to the one above  
         
@@ -212,18 +212,18 @@ class Optaflow():
         return mu
     
     def getUppBound(self, s, ts):
-        #return np.pow(self.W,H) * np.pow((ts / (2*np.log(ts) + 2*np.log(np.pi) + s*np.log(self.A) + np.log(1/(3*self.delta)))),(1/(1 + self.epsilon)))
+        # return np.pow(self.W,H) * np.pow((ts / (2*np.log(ts) + 2*np.log(np.pi) + s*np.log(self.A) + np.log(1/(3*self.delta)))),(1/(1 + self.epsilon)))
         return np.inf
     
     def evaluatePolicy(self, pi_0, z_k):
         matches = 0
-        for i in range(H):
+        for i in range(self.H):
             s, a = z_k  # z_k[2*i, 2*i+1] maybe, depends on how you save the trajectory
             if a == pi_0[s]: # action a is eps0-greedy wrt to s
                 matches += 1
        
         # indeed, exp(log()) trick
-        log_answer = matches*np.log(self.W) + H*np.log(self.eps0) # answer \in (0,1) -> log(answer) < 0
+        log_answer = matches*np.log(self.W) + self.H*np.log(self.eps0) # answer \in (0,1) -> log(answer) < 0
        
         # verify the computations are stable
         assert log_answer < 0.1 # simple verification
