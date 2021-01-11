@@ -18,45 +18,88 @@ def generate_randEpsGreedy(P, R):
     return np.random.choice(Na, Ns) # return an array with random actions at each state
 
 
-# modify pol_evaluation to work for on both, deterministic and eps0-greedy, not only deterministic ones 
-# eps_greedy = False -> current code is OK
-# eps_greedy = True  -> change the matrices slightly (TO DO)
-def policy_evaluation(P, R, policy, gamma = 0.9, tol=1e-2, eps_greedy = False, epsilon = 0.):
-        """
-        Args:
-            P: np.array
-                transition matrix (NsxNaxNs)
-            R: np.array
-                reward matrix (NsxNa)
-            policy: np.array
-                matrix mapping states to action (Ns)
-            gamma: float
-                discount factor
-            tol: float
-                precision of the solution
-        Return:
-            value_function: np.array
-                The value function of the given policy
-        """
-        Ns, Na = R.shape
-        #=====================================================
-        newP = np.zeros((Ns,Ns))
-        newR = np.zeros(Ns)
-        for state in range(Ns):
-            add_policy = int(policy[state])
-            newR[state] = R[state][add_policy]
-            for nextstate in range(Ns):
-                newP[state][nextstate] = P[state][add_policy][nextstate]
-        value_function = np.linalg.solve(np.eye(Ns) - gamma * newP,newR)
+# pol_evaluation working on both, deterministic and eps0-greedy in the finite horizon setting, not only deterministic ones
+def policy_evaluation(P, R, H, policy, gamma = 0.9, tol=1e-2, eps_greedy = False, epsilon = 0.):
+    """
+    Args:
+        P: np.array
+            transition matrix (NsxNaxNs)
+        R: np.array
+            reward matrix (NsxNa)
+        policy: np.array
+            matrix mapping states to action (Ns)
+        gamma: float
+            discount factor
+        tol: float
+            precision of the solution
+    Return:
+        value_function: np.array
+         The value function of the given policy
+    """
+    Ns, Na = R.shape
+    value_function = np.zeros((H, Ns))
 
-        # ====================================================
-        return value_function
+    # Deterministic case
+    if not eps_greedy:
+        # last step in the episode of length H, it's H-1 because of 0-index
+        for s in range(Ns):
+            act = policy[s]
+            vs = R[s,act]
+            value_function[H-1,s] = vs
+        # backward induction
+        for h in range(H-2, -1, -1):
+            for s in range(Ns):
+                act = policy[s]
+                vs  = R[s,act] + np.sum(P[s,act,:]*value_function[h+1,:])
+                value_function[h,s] = vs
+       
+    # Eps-greedy case
+    else:
+        # last step in the episode of length H
+        for s in range(Ns):
+            act = policy[s]
+            vs  = 0.
+            for a in range(Na):
+                if a == act:
+                    policy_val = 1. - epsilon*(Na-1)
+                else:
+                    policy_val = epsilon
+
+                vs += policy_val*R[s,a]
+            
+            value_function[H-1,s] = vs
+        # backward induction
+        for h in range(H-2,-1,-1):
+            for s in range(Ns):
+                act = policy[s]
+                vs  = 0.
+                for a in range(Na):
+                    if a == act:
+                        policy_val = 1. - epsilon*(Na-1)
+                    else:
+                        policy_val = epsilon
+
+                    vs += policy_val*(R[s,a] + np.sum(P[s,a,:]*value_function[h+1,:]))
+                value_function[h,s] = vs
     
-# compute the optimal policy and V-function but only among epsilon-0 policies 
-# Steps are the same, the only modification is in the policy improvement step 
+    return value_function
+        
+
+# compute the optimal policy and V-function but only among epsilon-0 policies
+# Steps are the same, the only modification is in the policy improvement step
 # I can code this one
-def policy_iteration_eps0(P, R, gamma=0.9, tol=1e-3):
-    pass
+def policy_iteration_eps0(P, R, H, gamma=0.9, tol=1e-3, epsilon = 0.):
+    Ns, Na = R.shape
+    policy = np.zeros(Ns, dtype = np.int) # this is an epsilon0-greedy policy
+    while True:
+        last_policy = policy # pi_k
+        # policy evaluation
+        V = policy_evaluation(P, R, H, policy, gamma, tol, eps_greedy = True, epsilon)
+        # policy improvement, greedy in an epsilon0-greedy way
+        qpi_values = np.argmax([R[s,:] + np.matmul(P[s,:,:], V) for s in range(Ns)])
+        # TODO
+        
+    
 
 class Optaflow():
     
@@ -82,7 +125,7 @@ class Optaflow():
         self.MIS         = np.ndarray((self.T, self.S), dtype = object) # I think this should work to save
                                                                         # the S-dim array representing the policy
         self.traject_MIS = np.ndarray((self.T, self.S), dtype = object) # Same thing as above, but 3H-tuple (s_i,a_i,r_i) 
-        self.rewards_MIS = np.ndarray((self.T, self.S), dtype = float)  # reward of the traject_MIS[t,s]
+        self.rewards_MIS = np.ndarray((self.T, self.S), dtype = np.float)  # reward of the traject_MIS[t,s]
 
         self.Titer  = np.zeros(self.S)
         self.regret = np.zeros(self.T)
@@ -168,7 +211,7 @@ class Optaflow():
                  self.rewards_MIS[ts,s] = reward_accum_episode
                  self.Titer[s]          = ts + 1
                     
-            Vfunc_played   = policy_evaluation(env.P, env.R, policy_played, gamma = env.gamma, tol = 1e-6, eps_greedy = True, epsilon = self.eps0)
+            Vfunc_played   = policy_evaluation(env.P, env.R, self.H, policy_played, gamma = env.gamma, tol = 1e-6, eps_greedy = True, epsilon = self.eps0)
             # self.regret[t] = self.regret[t-1] + self.V_eps(s) - self.V(s, policy_played)
             self.regret[t] = self.regret[t-1] + self.V_eps(s) - Vfunc_played[s] # I think this is equivalent to the one above  
         
@@ -200,7 +243,7 @@ class Optaflow():
        
         # verify the computations are stable
         assert log_answer < 0.1 # simple verification
-        if log_answer < -120:   # very small number -> probably precision erros
+        if log_answer < -120:   # very small number -> probably precision errors
             print("Precision issues in EvaluatePolicy %f" % log_answer)
         
         return np.exp(log_answer) # recover answer
