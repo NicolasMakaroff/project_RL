@@ -1,6 +1,8 @@
 import numpy as np
 import MIS
 from scipy.sparse.csgraph import maximum_flow
+from scipy.optimize import linear_sum_assignment as minCostMaxFlow
+from scipy.sparse import csr_matrix
 
 
 # given P and R, generate ANY baseline we want to outperform with r_b = minV^pi_b(s) > 0
@@ -12,7 +14,8 @@ def generate_baseline(P, R):
 
 # given P and R, generate ANY epsilon greedy policy (policy will be a 1D array representing for each state the eps-greedy action)
 def generate_randEpsGreedy(P, R):
-    pass # return an array with random action at each state, that's it
+    Ns, Na = R.shape
+    return np.random.choice(Na, Ns) # return an array with random actions at each state
 
 
 # modify pol_evaluation to work for on both, deterministic and eps0-greedy, not only deterministic ones 
@@ -55,50 +58,12 @@ def policy_evaluation(P, R, policy, gamma = 0.9, tol=1e-2, eps_greedy = False, e
 def policy_iteration_eps0(P, R, gamma=0.9, tol=1e-3):
     pass
 
-# we don't use this one, I think (look more in detail)
-def policy_iteration(P, R, gamma=0.9, tol=1e-3):
-        """
-        Args:
-            P: np.array
-                transition matrix (NsxNaxNs)
-            R: np.array
-                reward matrix (NsxNa)
-            gamma: float
-                discount factor
-            tol: float
-                precision of the solution
-        Return:
-            policy: np.array
-                the final policy
-            V: np.array
-                the value function associated to the final policy
-        """
-    Ns, Na = R.shape
-    V = np.zeros(Ns)
-    policy = np.zeros(Ns, dtype=np.int)
-    # ====================================================
-    
-    V_old = V
-    V = policy_evaluation(P,R,policy,gamma,tol)
-
-    converged = False
-    while (not converged):
-
-        V = R + gamma * P.dot(V)
-        greedy_policy = np.argmax(V, axis = 1)
-        if np.all(greedy_policy == policy):
-            converged = True
-        policy = greedy_policy
-        V = policy_evaluation(P,R,policy,gamma,tol)
-    # ====================================================
-    return policy, V
-
 class Optaflow():
     
-    def __init__(self, env, delta, T, epsilon, epsilon_0, alpha, pi_0, Vpi_0, pi_b, Vpi_b, Vpi_opt_eps0):
+    def __init__(self, env, delta, T, H, epsilon, epsilon_0, alpha, pi_0, Vpi_0, pi_b, Vpi_b, Vpi_opt_eps0):
         self.B   = None
         self.env = env
-        self.H   = env.H    # horizon of the environment, H should be included in the environment
+        self.H   = H        # horizon H of the episoden
         self.delta = delta  # seemingly not useful anymore (due to inf in getUppBound)
         self.A     = env.Na # number of actions
         self.S     = env.Ns # number of states
@@ -116,7 +81,8 @@ class Optaflow():
 
         self.MIS         = np.ndarray((self.T, self.S), dtype = object) # I think this should work to save
                                                                         # the S-dim array representing the policy
-        self.traject_MIS = np.ndarray((self.T, self.S), dtype = object) # Same thing as above, but H-tuple (or 2H)
+        self.traject_MIS = np.ndarray((self.T, self.S), dtype = object) # Same thing as above, but 3H-tuple (s_i,a_i,r_i) 
+        self.rewards_MIS = np.ndarray((self.T, self.S), dtype = float)  # reward of the traject_MIS[t,s]
 
         self.Titer  = np.zeros(self.S)
         self.regret = np.zeros(self.T)
@@ -126,7 +92,9 @@ class Optaflow():
         self.accum_saved_reward = 0.
        
         # define auxiliary attributes
-        self.W = 1./self.eps0 - self.A + 1
+        self.W      = 1./self.eps0 - self.A + 1
+        self.piflow = np.ndarray((self.T, self.S), dtype = object) # policy from max flow with graph of the trajectory z_t
+                                                                   # in the s-th MIS instance
 
     
     def V_b(self, state):
@@ -185,15 +153,20 @@ class Optaflow():
                 self.saved_reward[t] += self.safe_saved_reward[self.Titer[s0],s0]
 
             #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-            # sampling trajectory in the environment of lenght self.H (env.H) starting in s
+            # sampling trajectory in the environment of lenght self.H starting in s, SAVE this as a np.array of H tuples (s_i,a_i,r_i)
             J # 
             a = np.random() 
             self.state = self.env.step(a) #sampled policy of length H starting from s given by policy_played, Exactly!
             #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
             if not played_baseline:
                  self.MIS[ts,s] = policy_played 
+                 reward_accum_episode   = 0.
+                 for h in range(self.H):
+                     reward_accum_episode += J[h][2] # adding the rewards
+                 
                  self.traject_MIS[ts,s] = J
-                 self.Titer[s] = ts + 1
+                 self.rewards_MIS[ts,s] = reward_accum_episode
+                 self.Titer[s]          = ts + 1
                     
             Vfunc_played   = policy_evaluation(env.P, env.R, policy_played, gamma = env.gamma, tol = 1e-6, eps_greedy = True, epsilon = self.eps0)
             # self.regret[t] = self.regret[t-1] + self.V_eps(s) - self.V(s, policy_played)
@@ -207,7 +180,7 @@ class Optaflow():
             z_k = self.traject_MIS[k,s]
             for j in range(ts):
                 denom += self.evaluatePolicy(self.MIS[j,s], z_k)
-            mu += np.min(Mts, self.evaluatePolicy(pi_0, z_k)/denom) * self.reward(z_k) # typo in the notes Mts, DON'T forget to code self.reward
+            mu += np.min(Mts, self.evaluatePolicy(pi_0, z_k)/denom) * self.rewards_MIS[k,s]
             
         return mu
     
@@ -217,8 +190,8 @@ class Optaflow():
     
     def evaluatePolicy(self, pi_0, z_k):
         matches = 0
-        for i in range(self.H):
-            s, a = z_k  # z_k[2*i, 2*i+1] maybe, depends on how you save the trajectory
+        for h in range(self.H):
+            s, a, r = z_k[h]  
             if a == pi_0[s]: # action a is eps0-greedy wrt to s
                 matches += 1
        
@@ -232,31 +205,33 @@ class Optaflow():
         
         return np.exp(log_answer) # recover answer
 
-    def optimStep(self, s, ts): # still to check, but we need to add capacities for instance
-        for k in range(ts):
-            graph_k, init_vertex, sink_vertex = self.getGraph(z_k)
-            value_flow, res_graph = maximum_flow(graph_k, init_vertex, sink_vertex) #O(V.E^2)
-            
-        k_0 = np.argmax(self.V_robust_value(s, ts, res_graph))
-            
-        return k_0
+    #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    # AFTER THINKING MORE, it seems flows are not necessary and "the max matching" consists only in assigning for each state s
+    # the action a with the bigger weight idx(s,a) in the graph and that would be it
 
+    def optimStep(self, s, ts): # still to check, but we need to add capacities for instance
+        graph_k = self.getGraph(self.traject_MIS[ts-1,s]) # z_k: trajectory at time ts-1 in s (last trajectory inserted in s-th MIS)
+        flow    = minCostMaxFlow(graph_k) # get the policy with maximal weighted match with graph z_k, the other optimal ones are already stored in piflow   
+        self.piflow[ts-1,s] = flow
+        return np.argmax([self.V_robust_value(s, tt, self.piflow[tt,s])] for tt in range(ts))
     
     def getGraph(self,z_k):
         idx = {}
-        for i in z_k:
-            (s,a) = i
+        for h in range(self.H):
+            s, a, r = z_k[h]
             try:
                 idx[(s,a)] +=1
             except:
                 idx[(s,a)] = 1
-        idx = {k: v for k, v in sorted(idx.items())}
+        
+        idx  = {k: v for k, v in sorted(idx.items())}
         keys = np.array(list(idx.keys()))
-        no_double = list(dict.fromkeys(keys[:,0]))
-        row = keys[:,0]#np.array([0, 1, 3, 4])
-        column = keys[:,1]
-        data = np.array(list(idx.values()))
-        n = max(column.max()+1, row.max()+1)
+
+        row    = keys[:,0]
+        column = keys[:,1] + self.S # offset of S vertices to the actions-vertices to avoid collisions between ids
+        data   = np.array(list(idx.values()))
+        n      = self.S + self.A    # number of vertices in the graph, can be reduced, but OK in worst case 
+
         csr_graph = csr_matrix((data, (row, column)), shape=(n,n))
         return csr_graph.toarray()
             

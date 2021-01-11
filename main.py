@@ -16,23 +16,21 @@ if __name__ == '__main__':
             "|S: : : |",
             "+-------+",
         ]
-    # H = 10 # should be a hyperparameter of the MDP(environment) 
+
     env = GridWorldWithPits(grid=grid1, txt_map=grid1_MAP, proba_succ= 0.95, 
-                      uniform_trans_proba=0,normalize_reward=True)  # environment should have H as a hyperparameter 
+                      uniform_trans_proba=0,normalize_reward=True)   
+    H = 10 # horizon of the episode
 
     print(env.R.shape)
     print(env.P.shape)
     env.render()
 
     # ====================================================
-        # YOUR IMPLEMENTATION HERE
-
     epsilon   = 1     # epsilon of MIS - Renyi divergence
     epsilon_0 = 1e-6  # epsilon_0 from epsilon-greedy
     
     pi_0   = Optaflow.generate_randEpsGreedy(env.P, env.R, eps = epsilon_0)  # Fixed eps0-greedy policy
     Vpi_0  = Optaflow.policy_evaluation(env.P, env.R,  pi_0, gamma = env.gamma, eps_greedy = True, epsilon = epsilon_0) # V^pi_0  
-    # pi_0, V   = Optaflow.policy_iteration(env.P, env.R, gamma=env.gamma, tol=1e-5)
     
     delta = 1e-6  # just changed the name from theta to delta (same notation as pseudocode)
     T     = 1e6   # number of episodes
@@ -47,7 +45,7 @@ if __name__ == '__main__':
 
     alpha = 0.5   # conservative level: 0.5 is OK to test, if it works well, change to 0.9
    
-    optaflow = Optaflow.Optaflow(env.P, env.R, delta, T, epsilon, epsilon_0, alpha, pi_0, Vpi_0, pi_b, Vpi_b, Vpi_opt_eps0) 
+    optaflow = Optaflow.Optaflow(env.P, env.R, delta, T, H, epsilon, epsilon_0, alpha, pi_0, Vpi_0, pi_b, Vpi_b, Vpi_opt_eps0) 
     optaflow.block1()
     optaflow.block2()
     regret = optaflow.regret              # regret of the first T episodes
