@@ -58,6 +58,16 @@ class FiniteEnv(ABC):
         pass
 
     @abstractmethod
+    def curState(self):
+        """
+        Observe current state of the environment (no action is taken)
+
+        Return:
+            state (object)
+        """
+        pass
+
+    @abstractmethod
     def reward_func(self, state, action, next_state):
         """
         Args:
@@ -137,7 +147,8 @@ class GridWorldWithPits(FiniteEnv):
         self.uniform_trans_proba = uniform_trans_proba
 
         # compute the actions available in each state
-        self.state_actions = [range(len(self.action_names)) for _ in range(self.nb_states)]#self.compute_available_actions()
+        self.state_actions = [range(len(self.action_names)) for _ in range(self.nb_states)]
+        # self.state_actions = self.compute_available_actions(), sometimes this might be necessary, but for us, not calling it is ok
         self.matrix_representation()
         self.lastaction = None
         super(GridWorldWithPits, self).__init__(states=range(self.nb_states), action_sets=self.state_actions, P=self.P, gamma=gamma)
@@ -256,6 +267,9 @@ class GridWorldWithPits(FiniteEnv):
 
     def reward_func(self, state, action, next_state):
         return self.R[state, action]
+    
+    def curState(self):
+        return self.state
 
     def reset(self, s=None):
         self.lastaction = None
@@ -280,7 +294,9 @@ class GridWorldWithPits(FiniteEnv):
         self.lastaction = action
 
         r, c = self.state2coord[self.state]
+        # I think we should return done if we fall in the trap too and restart the episode
         done = self.grid[r][c] == 'g'
+        # done = (self.grid[r][c] == 'g') or (self.grid[r][c] == 'x')
         self.current_step +=1
         self.state = next_state
 
@@ -364,4 +380,15 @@ if __name__ == '__main__':
                       uniform_trans_proba=0,normalize_reward=True)  
 
     env.render()
+
+    ### The states on the map are encoded as 
+    # 0  1  2  3
+    # 4  5  6  7
+    # 8  9 10 11
+
+    ### The actions on the map are encoded as 
+    # 0 >
+    # 1 v
+    # 2 < 
+    # 3 ^
 
