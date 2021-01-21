@@ -1,4 +1,5 @@
 import numpy as np
+import math
 import MIS
 from scipy.sparse.csgraph import maximum_flow
 from scipy.optimize import linear_sum_assignment as minCostMaxFlow
@@ -25,7 +26,7 @@ def generate_baseline(P, R, H):
     # 8  9 10 11
 
     # Actions, > (0), v (1), < (2), ^ (3)
-    Ns, Na = R.shape
+    Ns, Na  = R.shape
     pol     = np.zeros((Ns,Na))
 
     pol[0]  = np.array([0.,1.,0.,0.]) # down
@@ -190,10 +191,12 @@ class Optaflow():
         self.accum_saved_reward = 0.
        
         # define auxiliary attributes
-        self.W      = 1./self.eps0 - self.A + 1
-        self.piflow = np.ndarray((self.T, self.S), dtype = object) # policy from max flow with graph of the trajectory z_t
-                                                                   # in the s-th MIS instance
-        self.env.reset() # this should not be necessary, but initialize just in case
+        self.W        = 1./self.eps0 - self.A + 1
+        self.piflow   = np.ndarray((self.T, self.S), dtype = object) # policy from max flow with graph of the trajectory z_t
+                                                                     # in the s-th MIS instance
+        self.cumDenom = np.zeros((self.S,self.T,self.T))             # cumDenom(k,r) = p_{x_k}(z_r) + ... + p_{x_0}(z_r) in the s-th MIS
+
+        self.env.reset()                                             # this should not be necessary, but initialize just in case
 
     # V-function (expected reward) for each policy and state at instant 0, before sampling the trajectory
     def V_b(self, state):
@@ -209,10 +212,10 @@ class Optaflow():
     # Initialization of the strategy. Here, we save reward to initialize the s MIS instances and deploy OPTaFlow algorithm
     def block1(self):
         self.accum_saved_reward = 0
-        self.B = (1 - self.alpha)/ self.alpha * (self.S/self.Rb) * np.max(self.Vpi_b)
+        self.B = int(math.ceil((1 - self.alpha)/ self.alpha * (self.S/self.Rb) * np.max(self.Vpi_b)))
         
         for t in range(self.B):
-            s = self.env.curState() # observe the state, you know it in advance at the beginning of each episode (don't take actions)
+            s  = self.env.curState() # observe the state, you know it in advance at the beginning of each episode (don't take actions)
             vb = self.V_b(s)
             self.accum_saved_reward += self.alpha*vb
             if t == 0:
@@ -227,7 +230,7 @@ class Optaflow():
             self.env.reset() # only the reset of the end of the episode
 
 
-    # Actual algorith, starts after B episodes (nb of episodes where we only saved reward)        
+    # Actual algorithm, starts after B episodes (nb of episodes where we only saved reward)        
     def block2(self):
         
         for t in range(self.B, self.T):
@@ -240,7 +243,7 @@ class Optaflow():
                 played_baseline = False
                 self.safe_saved_reward[ts,s] = (self.accum_saved_reward/self.S) + self.V_0(s) - (1 - self.alpha)*self.V_b(s)
             else:
-                pi_optimist    = self.optim_step(s,ts)                     # pi_optimist, always eps0-greedy
+                pi_optimist    = self.optimStep(s,ts)                     # pi_optimist, always eps0-greedy
                 vs_theta       = self.V_robust_value(s,ts,pi_optimist)     # lower_bound given by OPTIMIST for V^pi_optimist[0,s]
                 expPerformance = self.safe_saved_reward[ts-1,s] + vs_theta # what you think will win with this policy
                 minPerformance = (1 - self.alpha) * self.V_b(s)            # what you need to outperform
@@ -270,7 +273,7 @@ class Optaflow():
 
             self.env.reset() # end of the episode
 
-
+            # update MIS instance
             if not played_baseline:
                  self.MIS[ts,s] = policy_played
                  reward_accum_episode   = 0.
@@ -279,7 +282,16 @@ class Optaflow():
                  
                  self.traject_MIS[ts,s] = J
                  self.rewards_MIS[ts,s] = reward_accum_episode
-                 self.Titer[s]          = ts + 1
+
+                 # update cumDenom: cumDenom(k,r) = cumDenom(k-1,r) + p_{x_k}(z_r)
+                 # cumDenom(i, ts) and cumDenom(ts, i) where 0 <= i <= ts, all the other values are already filled
+                 self.cumDenom[s,0,ts] = self.evaluatePolicy(self.MIS[0,s], J)
+                 self.cumDenom[s,ts,0] = (ts>0)*self.cumDenom[s,ts-1,0] + self.evaluatePolicy(policy_played, self.traject_MIS[0,s])
+                 for k0 in range(1,ts+1):
+                     self.cumDenom[s,k0,ts] = self.cumDenom[s,k0-1,ts] + self.evaluatePolicy(self.MIS[k0,s], J)
+                     self.cumDenom[s,ts,k0] = self.cumDenom[s,ts-1,k0] + self.evaluatePolicy(policy_played, self.traject_MIS[k0,s])
+
+                 self.Titer[s] = ts + 1
                     
             Vfunc_played   = policy_evaluation(env.P, env.R, self.H, policy_played)
             self.regret[t] = self.regret[t-1] + self.V_eps(s) - Vfunc_played[0,s]  
@@ -342,38 +354,74 @@ class Optaflow():
         
         return np.exp(log_answer) # recover answer
 
-    #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-    # TODO
-    # Only this part is missing
+    def optimStep(self, s, ts):
+        """
+            Args:
+                s: s-th MIS instance
+                ts: iteration t in the s-th MIS instance
+            Return:
+                greedy_policy: suggested by greedy OPTIMIST
 
-    # AFTER THINKING MORE, it seems flows are not necessary and "the max matching" consists only in assigning for each state s
-    # the action a with the bigger weight idx(s,a) in the graph and that would be it
-
-    def optimStep(self, s, ts): # still to check, but we need to add capacities for instance
-        graph_k = self.getGraph(self.traject_MIS[ts-1,s]) # z_k: trajectory at time ts-1 in s (last trajectory inserted in s-th MIS)
-        flow    = minCostMaxFlow(graph_k) # get the policy with maximal weighted match with graph z_k, the other optimal ones are already stored in piflow   
-        self.piflow[ts-1,s] = flow
-        return np.argmax([self.V_robust_value(s, tt, self.piflow[tt,s])] for tt in range(ts))
-    
-    def getGraph(self,z_k):
-        idx = {}
-        for h in range(self.H):
-            s, a, r = z_k[h]
-            try:
-                idx[(s,a)] +=1
-            except:
-                idx[(s,a)] = 1
+            Logic:
+            The strategy is the following:
+            u_nonRobust = \sum_k p_x(z_k) * R(z_k) / cumDenom(ts-1,k)
         
-        idx  = {k: v for k, v in sorted(idx.items())}
-        keys = np.array(list(idx.keys()))
+            At each step, sort R(z_k)/cumDenom(ts-1,k) and take the max, make the policy x match the trajectory z_k (in the graph interpretation way)
+            Notice the policy x consists of H decision rules and therefore, at most one state is updated at each step h \in [1,H]
 
-        row    = keys[:,0]
-        column = keys[:,1] + self.S # offset of S vertices to the actions-vertices to avoid collisions between ids
-        data   = np.array(list(idx.values()))
-        n      = self.S + self.A    # number of vertices in the graph, can be reduced, but OK in worst case 
+            With the new policy x, remove the previous matched trajectory and repeat the process (only update the states of x non previously updated
+            with the new trajectories)
+        """
+        greedy_policy = -1*np.ones((self.H,self.S,self.A)) # H decision rules
+        active_traj   = {key: 1 for key in range(ts)}
+        while True: # at most ts iterations (each iteration removes 1 element from active_traj)
+            # policy is full or no more trajectories are available
+            policy_full  = np.min(greedy_policy) >= 0
+            more_traject = len(active_traj) > 0
+            
+            if (not more traject) or policy_full:
+                break
 
-        csr_graph = csr_matrix((data, (row, column)), shape=(n,n))
-        return csr_graph.toarray()
+            potential_val_max = -1
+            idx_maxPot        = -1
+            for k0 in active_traj:
+                rk = self.rewards_MIS[k0,s]
+                dk = self.cumDenom[s,ts-1,k0]
+                zk = self.traject_MIS[k0,s]
+                max_matches = 0
+                for h in range(self.H):
+                    s, a, r = zk[h]
+                    chosen_act  = np.min(greedy_policy[h,s]) >= 0 
+                    cur_opt_act = np.argmin(greedy_policy[h,s]) 
+                    if (not chosen_act) or cur_opt_act == a: # chosen action equal to proposed action "a"  or not chosen gives you a possible match 
+                        max_matches += 1
+
+                max_potential = np.exp(max_matches.np.log(self.W) + self.H*np.log(self.eps0))
+
+                if max_potential >= potential_val_max:
+                    potential_val_max = max_potential
+                    idx_maxPot        = k0
+
+            # be greedy wrt the max potential val (max matching) in all the decision rules
+            zk_opt = self.traject_MIS[idx_maxPot,s]
+            for h in range(self.H):
+                s, a, r = zk_opt[h]
+                chosen_act = np.min(greedy_policy[h,s]) >= 0
+                if not chosen_act:
+                    # set the action given by zk_opt as the optimal in the h-th decision rule
+                    greedy_policy[h,s]   = self.eps0*np.ones(self.A)
+                    greedy_policy[h,s,a] = 1-self.eps0*(self.A-1)
             
-            
+            # update active_traj and sort again with the remaining trajectories and the updated policy
+            del active_traj[idx_maxPot]
+
+        # policy is fully updated (usually, not the case) or all trajectories traversed (more likely) -> complete randomly the policy
+        for h in range(self.H):
+            for s in range(self.S):
+                chosen_act = np.min(greedy_policy[h,s]) >= 0
+                if not chosen_act:
+                    greedy_policy[h,s]   = self.eps0*np.ones(self.A)
+                    greedy_policy[h,s,0] = 1-self.eps0*(self.A-1)   # always completing with action 0 (right ->) 
+
+        return greedy_policy
 
