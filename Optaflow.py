@@ -1,10 +1,6 @@
 import numpy as np
 import math
-import MIS
-from scipy.sparse.csgraph import maximum_flow
-from scipy.optimize import linear_sum_assignment as minCostMaxFlow
-from scipy.sparse import csr_matrix
-
+import time
 
 # given P, R and H, generate ANY baseline we want to outperform with r_b = minV^pi_b(s) > 0
 # We hardcode the policy given in the paper
@@ -65,6 +61,7 @@ def generate_randEpsGreedy(P, R, H, epsilon = 0.):
     """
     Ns, Na        = R.shape
     policy_random = np.zeros((H, Ns, Na))
+    np.random.seed(42)
     for h in range(H):
         # return an array with random actions at each state
         random_decision  = np.random.choice(Na,Ns)
@@ -152,7 +149,7 @@ def policy_iteration_eps0(P, R, H, epsilon = 0.):
             rule_sh           = epsilon*np.ones(Na)
             rule_sh[opt_act]  = 1 - epsilon*(Na-1)
             policy_opt[h,s,:] = rule_sh
-            value_opt[h,s,:]  = np.sum(rule_sh*Qh_s)
+            value_opt[h,s]    = np.sum(rule_sh*Qh_s)
 
     return policy_opt, value_opt
 
@@ -176,19 +173,22 @@ class Optaflow():
         self.pi_b    = pi_b   # baseline policy        (HxNsxNa)
         self.Vpi_b   = Vpi_b  # value function of pi_b (HxNs)
         self.Veps    = Vpi_opt_eps0       # only for regret computation purposes, we don't have acces to this
-        self.Rb      = np.min(self.Vpi_b) # min value of V^pi_b, our assumption is that this value is positive
+        self.Rb      = np.min(self.Vpi_b[0]) # min value of V^pi_b, our assumption is that this value is positive
 
         self.MIS         = np.ndarray((self.T, self.S), dtype = object)    # I think this should work to save
                                                                            # the policy in the s-th instance
         self.traject_MIS = np.ndarray((self.T, self.S), dtype = object)    # Same thing as above, but 3H-tuple (s_i,a_i,r_i) 
         self.rewards_MIS = np.ndarray((self.T, self.S), dtype = np.float)  # reward of the traject_MIS[t,s]
 
-        self.Titer  = np.zeros(self.S) # counter of the number of samples t in the s-th MIS
+        self.Titer  = np.zeros(self.S, dtype = int) # counter of the number of samples t in the s-th MIS
         self.regret = np.zeros(self.T) # regret at instant T over all the states
 
-        self.saved_reward       = np.zeros(self.T)
-        self.safe_saved_reward  = np.zeros((self.T, self.S))
+        self.saved_reward       = np.zeros(self.T)          
+        self.safe_saved_reward  = np.zeros((self.T, self.S)) # reward saved from non conservative steps in state s
+        self.saved_conservative = np.zeros((self.T, self.S)) # reward saved from conservative steps in state s
         self.accum_saved_reward = 0.
+
+        self.nonCnsvProgress    = np.zeros(self.T)           # How many non conservative steps until step T
        
         # define auxiliary attributes
         self.W        = 1./self.eps0 - self.A + 1
@@ -212,9 +212,14 @@ class Optaflow():
     # Initialization of the strategy. Here, we save reward to initialize the s MIS instances and deploy OPTaFlow algorithm
     def block1(self):
         self.accum_saved_reward = 0
+        print("Transition matrix: ", self.env.P)
+        print("Reward matrix: ", self.env.R)
+        print("rb: ", self.Rb)
+        print("alpha: ", self.alpha)
         self.B = int(math.ceil((1 - self.alpha)/ self.alpha * (self.S/self.Rb) * np.max(self.Vpi_b)))
-        
-        for t in range(self.B):
+        print("B: ", self.B)
+
+        for t in range(min(self.T,self.B)):
             s  = self.env.curState() # observe the state, you know it in advance at the beginning of each episode (don't take actions)
             vb = self.V_b(s)
             self.accum_saved_reward += self.alpha*vb
@@ -229,6 +234,11 @@ class Optaflow():
             # It won't change anything, but let's pretend we do it
             self.env.reset() # only the reset of the end of the episode
 
+        # distributing the reward you have saved for each state, probably change this because you only need to save reward for the states where you start
+        for s in range(self.S):
+            self.saved_conservative[min(self.T,self.B),s] = self.accum_saved_reward/self.S
+            
+
 
     # Actual algorithm, starts after B episodes (nb of episodes where we only saved reward)        
     def block2(self):
@@ -237,33 +247,55 @@ class Optaflow():
             s  = self.env.curState() # observe the episode, you know it in advance
             ts = self.Titer[s]
             played_baseline = True
+            self.saved_conservative[t] = self.saved_conservative[t-1]
+            print("Initial state s: ", s)
 
             if ts == 0:
                 policy_played   = self.pi_0
                 played_baseline = False
-                self.safe_saved_reward[ts,s] = (self.accum_saved_reward/self.S) + self.V_0(s) - (1 - self.alpha)*self.V_b(s)
+                #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                print("accum_saved_reward: ", self.accum_saved_reward)
+                print("number of states: ", self.S)
+                print("V_0(s): ", self.V_0(s))
+                print("V_b(s): ", self.V_b(s))
+                print("V_eps(s): ", self.V_eps(s))
+                print("Policy random pi_0: ", self.pi_0)
+                print("ts: ", ts)
+                print("s: ", s)
+                #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                self.safe_saved_reward[ts,s] = self.V_0(s) - (1 - self.alpha)*self.V_b(s)
+                # self.safe_saved_reward[ts,s] = (self.accum_saved_reward/self.S) + self.V_0(s) - (1 - self.alpha)*self.V_b(s)
             else:
-                pi_optimist    = self.optimStep(s,ts)                     # pi_optimist, always eps0-greedy
+                pi_optimist    = self.optimStep(s,ts)                      # pi_optimist, always eps0-greedy
                 vs_theta       = self.V_robust_value(s,ts,pi_optimist)     # lower_bound given by OPTIMIST for V^pi_optimist[0,s]
-                expPerformance = self.safe_saved_reward[ts-1,s] + vs_theta # what you think will win with this policy
+                saved_so_far   = self.safe_saved_reward[ts-1,s] + self.saved_conservative[t-1,s]
+                expPerformance = saved_so_far + vs_theta # what you think will win with this policy
                 minPerformance = (1 - self.alpha) * self.V_b(s)            # what you need to outperform
                 if expPerformance >= minPerformance:
                     policy_played   = pi_optimist
                     played_baseline = False
-                    self.safe_saved_reward[ts,s] = self.safe_saved_reward[ts-1,s] + expPerformance - minPerformance
+                    self.safe_saved_reward[ts,s] = self.safe_saved_reward[ts-1,s] + vs_theta - minPerformance
+                    print("Saved so far: ", saved_so_far)
+                    print("vs_theta: ", vs_theta)
+                    print("Value outperformance: ", expPerformance)
+                    print("Min performance: ", minPerformance)
                 else:
                     policy_played   = self.pi_b
                     played_baseline = True
-                    self.safe_saved_reward[ts,s] = self.safe_saved_reward[ts-1,s] + self.alpha * self.V_b(s)
+                    # self.safe_saved_reward[ts,s] = self.safe_saved_reward[ts-1,s] + self.alpha * self.V_b(s)
+                    self.saved_conservative[t,s] += self.alpha * self.V_b(s)
+                    # print("Safe saved reward: ", self.alpha * self.V_b(s))
                     
-            for s0 in self.env.state:
-                self.saved_reward[t] += self.safe_saved_reward[self.Titer[s0],s0]
+            print("saved reward at state ", s, ": ", self.safe_saved_reward[ts,s] + self.saved_conservative[t,s])
+            
+            for s0 in range(self.S):
+                self.saved_reward[t] += self.safe_saved_reward[self.Titer[s0],s0] + self.saved_conservative[t,s0]
 
 
             # sampling trajectory in the environment of lenght self.H starting in s -> list of lenght H in the format (s_i,a_i,r_i)
             J = []
             for h in range(self.H):
-                st = env.curState()
+                st = self.env.curState()
                 # sample using the h-th decision rule policy[h]
                 act = np.random.choice(self.A, 1, p = policy_played[h,st]).item()
                 next_st, reward, done, _ = self.env.step(act)
@@ -292,8 +324,16 @@ class Optaflow():
                      self.cumDenom[s,ts,k0] = self.cumDenom[s,ts-1,k0] + self.evaluatePolicy(policy_played, self.traject_MIS[k0,s])
 
                  self.Titer[s] = ts + 1
-                    
-            Vfunc_played   = policy_evaluation(env.P, env.R, self.H, policy_played)
+                 self.nonCnsvProgress[t] = self.nonCnsvProgress[t-1] + 1
+            else:
+                 self.nonCnsvProgress[t] = self.nonCnsvProgress[t-1]
+            
+            if not played_baseline:
+                print("Episode %d is non conservative" % t)
+            else:
+                print("Episode %d is conservative" % t)
+
+            Vfunc_played   = policy_evaluation(self.env.P, self.env.R, self.H, policy_played)
             self.regret[t] = self.regret[t-1] + self.V_eps(s) - Vfunc_played[0,s]  
         
     def V_robust_value(self, s, ts, pi):
@@ -307,13 +347,14 @@ class Optaflow():
                 mu_t: MIS estimator of V^pi[0,s] computed using the expression of MIS paper
         """
         Mts = self.getUppBound(s, ts)
-        mu = 0
+        mu  = 0.
         for k in range(ts):
             denom = 0
             z_k = self.traject_MIS[k,s]
             for j in range(ts):
                 denom += self.evaluatePolicy(self.MIS[j,s], z_k)
-            mu += np.min(Mts, self.evaluatePolicy(pi, z_k)/denom) * self.rewards_MIS[k,s]
+
+            mu += min(Mts, self.evaluatePolicy(pi, z_k)/denom) * self.rewards_MIS[k,s]
             
         return mu
     
@@ -346,12 +387,7 @@ class Optaflow():
        
         # indeed, exp(log()) trick
         log_answer = matches*np.log(self.W) + self.H*np.log(self.eps0) # answer \in (0,1) -> log(answer) < 0
-       
-        # verify the computations are stable
-        assert log_answer < 0.1 # simple verification
-        if log_answer < -120:   # very small number -> probably precision errors
-            print("Precision issues in EvaluatePolicy %f" % log_answer)
-        
+               
         return np.exp(log_answer) # recover answer
 
     def optimStep(self, s, ts):
@@ -374,12 +410,13 @@ class Optaflow():
         """
         greedy_policy = -1*np.ones((self.H,self.S,self.A)) # H decision rules
         active_traj   = {key: 1 for key in range(ts)}
+
         while True: # at most ts iterations (each iteration removes 1 element from active_traj)
             # policy is full or no more trajectories are available
             policy_full  = np.min(greedy_policy) >= 0
             more_traject = len(active_traj) > 0
             
-            if (not more traject) or policy_full:
+            if (not more_traject) or policy_full:
                 break
 
             potential_val_max = -1
@@ -390,38 +427,37 @@ class Optaflow():
                 zk = self.traject_MIS[k0,s]
                 max_matches = 0
                 for h in range(self.H):
-                    s, a, r = zk[h]
-                    chosen_act  = np.min(greedy_policy[h,s]) >= 0 
-                    cur_opt_act = np.argmin(greedy_policy[h,s]) 
-                    if (not chosen_act) or cur_opt_act == a: # chosen action equal to proposed action "a"  or not chosen gives you a possible match 
+                    s0, a0, r0  = zk[h]
+                    chosen_act  = np.min(greedy_policy[h,s0]) >= 0 
+                    cur_opt_act = np.argmin(greedy_policy[h,s0]) 
+                    if (not chosen_act) or cur_opt_act == a0: # chosen action equal to proposed action "a"  or not chosen gives you a possible match 
                         max_matches += 1
 
-                max_potential = np.exp(max_matches.np.log(self.W) + self.H*np.log(self.eps0))
+                max_potential = np.exp(max_matches*np.log(self.W) + self.H*np.log(self.eps0))
 
                 if max_potential >= potential_val_max:
                     potential_val_max = max_potential
                     idx_maxPot        = k0
 
             # be greedy wrt the max potential val (max matching) in all the decision rules
-            zk_opt = self.traject_MIS[idx_maxPot,s]
+            zk_opt = list(self.traject_MIS[idx_maxPot,s])
             for h in range(self.H):
-                s, a, r = zk_opt[h]
-                chosen_act = np.min(greedy_policy[h,s]) >= 0
+                s0, a0, r0 = zk_opt[h]
+                chosen_act = np.min(greedy_policy[h,s0]) >= 0
                 if not chosen_act:
                     # set the action given by zk_opt as the optimal in the h-th decision rule
-                    greedy_policy[h,s]   = self.eps0*np.ones(self.A)
-                    greedy_policy[h,s,a] = 1-self.eps0*(self.A-1)
+                    greedy_policy[h,s0]    = self.eps0*np.ones(self.A)
+                    greedy_policy[h,s0,a0] = 1-self.eps0*(self.A-1)
             
             # update active_traj and sort again with the remaining trajectories and the updated policy
             del active_traj[idx_maxPot]
 
         # policy is fully updated (usually, not the case) or all trajectories traversed (more likely) -> complete randomly the policy
         for h in range(self.H):
-            for s in range(self.S):
-                chosen_act = np.min(greedy_policy[h,s]) >= 0
+            for s0 in range(self.S):
+                chosen_act = np.min(greedy_policy[h,s0]) >= 0
                 if not chosen_act:
-                    greedy_policy[h,s]   = self.eps0*np.ones(self.A)
-                    greedy_policy[h,s,0] = 1-self.eps0*(self.A-1)   # always completing with action 0 (right ->) 
+                    greedy_policy[h,s0]   = self.eps0*np.ones(self.A)
+                    greedy_policy[h,s0,0] = 1-self.eps0*(self.A-1)   # always completing with action 0 (right ->) 
 
         return greedy_policy
-
