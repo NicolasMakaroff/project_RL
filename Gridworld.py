@@ -165,7 +165,8 @@ class GridWorldWithPits(FiniteEnv):
                 for a_idx, action in enumerate(range(len(self.action_names))):
                     self.P[s, a_idx].fill(0.)
                     if self.grid[r][c] == 'g':
-                        self.P[s, a_idx, self.initial_state] = 1.
+                        # self.P[s, a_idx, self.initial_state] = 1.
+                        self.P[s, a_idx, s] = 1. # once you reach a final state, continue there
                         self.R[s, a_idx] = 10.
                     else:
                         ns_succ, ns_fail = np.inf, np.inf
@@ -296,6 +297,10 @@ class GridWorldWithPits(FiniteEnv):
         r, c = self.state2coord[self.state]
         # I think we should return done if we fall in the trap too and restart the episode
         done = self.grid[r][c] == 'g'
+        # We continue in the terminal state and don't sample the next state
+        # if done:
+        #    next_state = self.state # continue in the terminal state
+
         # done = (self.grid[r][c] == 'g') or (self.grid[r][c] == 'x')
         self.current_step +=1
         self.state = next_state

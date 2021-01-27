@@ -236,7 +236,7 @@ class Optaflow():
 
         # distributing the reward you have saved for each state, probably change this because you only need to save reward for the states where you start
         for s in range(self.S):
-            self.saved_conservative[min(self.T,self.B),s] = self.accum_saved_reward/self.S
+            self.saved_conservative[min(self.T,self.B)-1,s] = self.accum_saved_reward/self.S
             
 
 
@@ -300,8 +300,8 @@ class Optaflow():
                 act = np.random.choice(self.A, 1, p = policy_played[h,st]).item()
                 next_st, reward, done, _ = self.env.step(act)
                 J.append((st, act, reward))
-                if done:
-                    self.env.reset()
+                # if done:
+                #    self.env.reset()
 
             self.env.reset() # end of the episode
 
