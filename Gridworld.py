@@ -168,6 +168,7 @@ class GridWorldWithPits(FiniteEnv):
                         # self.P[s, a_idx, self.initial_state] = 1.
                         self.P[s, a_idx, s] = 1. # once you reach a final state, continue there
                         self.R[s, a_idx] = 10.
+                    
                     else:
                         ns_succ, ns_fail = np.inf, np.inf
                         if action == 0:
